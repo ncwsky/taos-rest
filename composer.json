@@ -1,0 +1,14 @@
+{
+    "name": "myphps/taos-rest",
+    "type": "library",
+    "license": "MIT",
+    "description": "TDengine REST API",
+    "require": {
+        "php": ">=7.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "TDEngine\\": "src"
+        }
+    }
+}
