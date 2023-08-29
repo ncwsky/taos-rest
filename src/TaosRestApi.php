@@ -2,6 +2,10 @@
 namespace TDEngine;
 
 class TaosRestApi{
+    const FETCH_BOTH = 2;
+    const FETCH_ASSOC = 1;
+    const FETCH_NUM = 0;
+
     public $host = '';
     public $tz; //时区 如 America/New_York
     public $token;
@@ -9,10 +13,11 @@ class TaosRestApi{
 
     public $errno = 0;
     public $error = '';
-
-    const FETCH_BOTH = 2;
-    const FETCH_ASSOC = 1;
-    const FETCH_NUM = 0;
+    public $columns = [];
+    public $columnNames = [];
+    public $data = [];
+    private $rowCount = 0; //影响的条数
+    private $idx = 0; //循环数据下标
 
     // 连接数据库
     public function __construct($host, $user, $pwd, $dbname='', $timezone='') {
@@ -44,28 +49,48 @@ class TaosRestApi{
      * @return array|bool|false|string
      */
     public function request($sql, $req_id=''){
+        $this->columns = [];
+        $this->columnNames = [];
+        $this->data = []; //new SplFixedArray(5);
+        $this->rowCount = 0;
+        $this->idx = 0;
         $this->errno = 0;
         $this->error = '';
 
-        $restApi = $this->host . "/rest/sql";
-        if ($this->dbname !== '') $restApi .= '/' . $this->dbname;
+        if ($this->dbname === '') {
+            throw new \Exception('Database not specified');
+            $this->errno = 9750;
+            $this->error = "Database not specified";
+            return false;
+        }
+        $restApi = $this->host . "/rest/sql/" . $this->dbname;
 
         $params = '';
         if ($this->tz !== '') $params .= '&tz=' . $this->tz;
         if ($req_id) $params .= '&req_id=' . $req_id;
         if ($params) $restApi .= '?_=1' . $params;
 
-        $res = $this->curl($restApi, 'POST', $sql, 60, "Authorization: Basic ".$this->token);
-        if ($res) {
-            $ret = json_decode($res, true);
-            if ($ret['code'] != 0) {
-                $this->errno = $ret['code'];
-                $this->error = $ret['desc'];
-                return false;
-            }
-            return $ret;
+        $res = $this->curl($restApi, 'POST', $sql, 60, "Authorization: Basic " . $this->token);
+        if ($res === false) return false;
+        \myphp\Log::write($res, 'log');
+        $ret = json_decode($res, true);
+        if ($ret['code'] != 0) {
+            $this->errno = $ret['code'];
+            $this->error = $ret['desc'];
+            return false;
         }
-        return false;
+        $columns = $columnNames = [];
+        foreach ($ret['column_meta'] as $row)
+        {
+            $columns[$row[0]] = ['type_name'=>$row[1],'length'=>$row[2]];
+            $columnNames[] = $row[0];
+        }
+        $this->columns = $columns;
+        $this->columnNames = $columnNames;
+        $this->data = $ret['data'];
+
+        $this->rowCount = $ret['rows'] ?? 0;
+        return true;
     }
 
     //通过curl 自定义发送请求
@@ -184,6 +209,83 @@ class TaosRestApi{
     }
 
     /**
+     * 客户端版本
+     * @return bool|mixed
+     */
+    public function clientVer()
+    {
+        if (!$this->exec('SELECT CLIENT_VERSION()')) return false;
+        return $this->fetch(self::FETCH_NUM)[0];
+    }
+
+    /**
+     * 服务端版本
+     * @return bool|mixed
+     */
+    public function serverVer()
+    {
+        if (!$this->exec('SELECT SERVER_VERSION()')) return false;
+        return $this->fetch(self::FETCH_NUM)[0];
+    }
+
+    /**
+     * 显示接入集群的应用（客户端）信息。
+     * @return array|bool
+     */
+    public function apps()
+    {
+        return $this->query("SHOW APPS");
+    }
+
+    /**
+     * 显示当前集群的信息
+     * @return array|bool
+     */
+    public function cluster()
+    {
+        return $this->query("SHOW CLUSTER");
+    }
+
+    /**
+     * 显示当前系统中存在的连接的信息
+     * @return array|bool
+     */
+    public function connections()
+    {
+        return $this->query("SHOW CONNECTIONS");
+    }
+
+    /**
+     * 显示当前数据库下所有消费者的信息。
+     * @return array|bool
+     */
+    public function consumers()
+    {
+        return $this->query("SHOW CONSUMERS");
+    }
+
+    /**
+     * 删除过期数据
+     * 删除过期数据，并根据多级存储的配置归整数据。
+     * @param string $dbname
+     * @return array|bool|false|string
+     */
+    public function trimDb($dbname = '')
+    {
+        return $this->exec("TRIM DATABASE " . ($dbname !== '' ? $dbname : $this->dbname));
+    }
+
+    /**
+     * 落盘内存数据
+     * 在关闭节点之前，执行这条命令可以避免重启后的数据回放，加速启动过程。
+     * @param string $dbname
+     * @return array|bool|false|string
+     */
+    public function flushDb($dbname = '')
+    {
+        return $this->exec("FLUSH DATABASE " . ($dbname !== '' ? $dbname : $this->dbname));
+    }
+    /**
      * 创建数据库
      * @param $dbname
      * @param bool $ifNotExists
@@ -194,6 +296,12 @@ class TaosRestApi{
     {
         $sql = "CREATE DATABASE " . ($ifNotExists ? "IF NOT EXISTS " : "") . $dbname . " " . $options;
         return $this->exec($sql);
+    }
+
+    //TBNAME 可以视为超级表中一个特殊的标签，代表子表的表名。
+    public function subTables()
+    {
+        return $this->query("SELECT TBNAME FROM " . $this->dbname);
     }
 
     /**
@@ -208,37 +316,93 @@ class TaosRestApi{
         return $this->exec($sql);
     }
 
+    /**
+     * 删除数据表
+     * @param $tb_name
+     * @param bool $ifExists
+     * @return array|bool|false|string
+     */
+    public function dropTb($tb_name, $ifExists=false)
+    {
+        $sql = "DROP TABLE " . ($ifExists ? 'IF EXISTS ' : '') . $tb_name;
+        return $this->exec($sql);
+    }
+
     /** SQL安全过滤
      * @param $str
      * @return string
      */
     public function quote($str) {
-        return str_replace("'", "''", $str);
+        return "'" . strtr($str, ["\\"=>"\\\\", "'"=>"\'"]) . "'";
+        //return "'" . str_replace(["\\", "'"], ["\\\\", "\'"], $str) . "'";
     }
 
+    /**
+     * 执行sql
+     * @param $sql
+     * @return bool|int
+     */
 	public function exec($sql) {
-        return $this->request($sql);
-	}
+        if (!$this->request($sql)) return false;
+        $rowCount = $this->rowCount();
 
-    public function query($sql, $type = self::FETCH_ASSOC)
-    {
-        return $this->request($sql);
-    }
+        if($rowCount==0) \myphp\Log::write($sql, 'log');
 
-	public function fetchAll($sql, $type = 'assoc'){
 
-    }
-
-	public function fetch($query, $type = 'assoc') {
-
+        return $rowCount ?: true;
 	}
 
     /**
-     * 结果集行数
-     * @return int
+     * 执行sql返回数据结果
+     * @param $sql
+     * @param int $mode
+     * @return array|bool
      */
-	public function rowCount() {
-		return 0;
+    public function query($sql, $mode = self::FETCH_ASSOC)
+    {
+        if (!$this->request($sql)) return false;
+
+        return $this->fetchAll($mode);
+    }
+
+    /**
+     * 对exec执行的数据输出
+     * @param int $mode
+     * @return array|bool
+     */
+	public function fetchAll($mode = self::FETCH_ASSOC){
+        if (!$this->data) return false;
+
+        if ($mode == self::FETCH_ASSOC) {
+            foreach ($this->data as $k => $row) {
+                $this->data[$k] = array_combine($this->columnNames, $row);
+            }
+        } elseif ($mode == self::FETCH_BOTH) {
+            foreach ($this->data as $k => $row) {
+                $this->data[$k] = array_merge($row, array_combine($this->columnNames, $row));
+            }
+        }
+        return $this->data;
+    }
+
+    /**
+     * 对exec执行数据获取一行数据
+     * @param int $mode
+     * @return array|bool
+     */
+	public function fetch($mode = self::FETCH_ASSOC) {
+        if (!$this->data) return false;
+        if (!isset($this->data[$this->idx])) return false;
+
+        $row = $this->data[$this->idx];
+
+        $this->idx++;
+        if ($mode == self::FETCH_ASSOC) {
+            return array_combine($this->columnNames, $row);
+        } elseif ($mode == self::FETCH_BOTH) {
+            return array_merge($row, array_combine($this->columnNames, $row));
+        }
+        return $row;
 	}
 
     /**
@@ -248,4 +412,11 @@ class TaosRestApi{
 	public function lastInsertId($sequenceName=null) {
 		return 0;
 	}
+
+	public function rowCount(){
+        if (isset($this->columns['affected_rows']) && count($this->columnNames) == 1) {
+            $this->rowCount = $this->data[0][0];
+        }
+        return $this->rowCount;
+    }
 }
