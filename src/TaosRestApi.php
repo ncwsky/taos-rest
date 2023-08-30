@@ -72,7 +72,6 @@ class TaosRestApi{
 
         $res = $this->curl($restApi, 'POST', $sql, 60, "Authorization: Basic " . $this->token);
         if ($res === false) return false;
-        \myphp\Log::write($res, 'log');
         $ret = json_decode($res, true);
         if ($ret['code'] != 0) {
             $this->errno = $ret['code'];
@@ -345,10 +344,6 @@ class TaosRestApi{
 	public function exec($sql) {
         if (!$this->request($sql)) return false;
         $rowCount = $this->rowCount();
-
-        if($rowCount==0) \myphp\Log::write($sql, 'log');
-
-
         return $rowCount ?: true;
 	}
 
