@@ -2,6 +2,7 @@
 namespace TDEngine;
 
 class TaosRestApi{
+    const FETCH_COLUMN = 7;
     const FETCH_BOTH = 2;
     const FETCH_ASSOC = 1;
     const FETCH_NUM = 0;
@@ -341,11 +342,11 @@ class TaosRestApi{
      * @param $sql
      * @return bool|int
      */
-	public function exec($sql) {
+    public function exec($sql) {
         if (!$this->request($sql)) return false;
         $rowCount = $this->rowCount();
         return $rowCount ?: true;
-	}
+    }
 
     /**
      * 执行sql返回数据结果
@@ -365,12 +366,16 @@ class TaosRestApi{
      * @param int $mode
      * @return array|bool
      */
-	public function fetchAll($mode = self::FETCH_ASSOC){
+    public function fetchAll($mode = self::FETCH_ASSOC){
         if (!$this->data) return false;
 
         if ($mode == self::FETCH_ASSOC) {
             foreach ($this->data as $k => $row) {
                 $this->data[$k] = array_combine($this->columnNames, $row);
+            }
+        } elseif ($mode == self::FETCH_COLUMN) {
+            foreach ($this->data as $k => $row) {
+                $this->data[$k] = $row[0];
             }
         } elseif ($mode == self::FETCH_BOTH) {
             foreach ($this->data as $k => $row) {
@@ -385,7 +390,7 @@ class TaosRestApi{
      * @param int $mode
      * @return array|bool
      */
-	public function fetch($mode = self::FETCH_ASSOC) {
+    public function fetch($mode = self::FETCH_ASSOC) {
         if (!$this->data) return false;
         if (!isset($this->data[$this->idx])) return false;
 
@@ -394,21 +399,23 @@ class TaosRestApi{
         $this->idx++;
         if ($mode == self::FETCH_ASSOC) {
             return array_combine($this->columnNames, $row);
+        } elseif ($mode == self::FETCH_COLUMN) {
+            return $row[0];
         } elseif ($mode == self::FETCH_BOTH) {
             return array_merge($row, array_combine($this->columnNames, $row));
         }
         return $row;
-	}
+    }
 
     /**
      * 取得上一步 INSERT 操作产生的AUTO_INCREMENT的ID
      * @return mixed
      */
-	public function lastInsertId($sequenceName=null) {
-		return 0;
-	}
+    public function lastInsertId($sequenceName=null) {
+        return 0;
+    }
 
-	public function rowCount(){
+    public function rowCount(){
         if (isset($this->columns['affected_rows']) && count($this->columnNames) == 1) {
             $this->rowCount = $this->data[0][0];
         }
